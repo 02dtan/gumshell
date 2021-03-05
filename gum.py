@@ -1,4 +1,4 @@
-import os, glob, shlex, getpass, signal
+import os, glob, shlex, getpass, signal, curses
 from termcolor import colored
 from subprocess import *
 
@@ -32,6 +32,7 @@ def st(s):
 
 #all input, glob, regex, literal
 #FIX: take pipe splits before quote splits to preserve spacing between commands where whitespace_split won't handle
+#FIX: RECOGNIZE WHITESPACE in string literal especially on isolated \" or \' which would otherwise create a cmd='' and throw error
 def parseInput():
     i = input(colored('%s %s$ ' % ((os.getcwd().split('/')[-1] if os.getcwd().split('/')[-1]
         != getpass.getuser() else '~'), getpass.getuser()), 'red'))
@@ -46,25 +47,51 @@ def parseInput():
     for token in s:
         if len(token)>0:
             #manual quotation handling for regex, escape, literal
-            if token[0] in check or token[-1] in check:
-                if token[0] == token[-1]:
+            if (token[0] in check or token[-1] in check) or len(single)>0:
+                if (token[0] == token[-1]) and (token[0] == '\'' or token[0] == '\"'):
                     if token[0] == '\'' and len(token.strip('\'')) > 0:
-                        cmds[c].append(token.strip('\''))
+                        if token.strip('\'')[0] == '$': #$(xyz)
+                            if '(' in token and ')' in token:
+                                temp = token.split('(')[1].split(')')[0]
+                                cmds[c].append(st(check_output(temp)))
+                        else:
+                            cmds[c].append(token.strip('\''))
                     elif token[0] == '\"' and len(token.strip('\"')) > 0:
-                        cmds[c].append(token.strip('\"'))
+                        if token.strip('\"')[0] == '$': #$(xyz)
+                            if '(' in token and ')' in token:
+                                temp = token.split('(')[1].split(')')[0]
+                                cmds[c].append(st(check_output(temp)))
+                        else:
+                            cmds[c].append(token.strip('\"'))
                 elif token[0] in check:#implicit beginning of whitespaced literal
                     if token[0] == '\'':
                         single.append(True)
                     else:
                         single.append(False)
-                    buffer.append(token[1:])
+                    if token[0] == '$': #$(xyz)
+                        if '(' in token and ')' in token:
+                            temp = token.split('(')[1].split(')')[0]
+                            buffer.append(st(check_output(temp)))
+                    else:
+                        buffer.append(token[1:])
                 elif token[-1] in check:
                     current_buffer=single.pop()
-                    if (current_buffer and token[-1] == '\'') or (not current_buffer and token[-1] == '\"'):
-                        buffer.append(token[:-1])
+                    if token[0] == '$': #$(xyz)
+                        if '(' in token and ')' in token:
+                            temp = token.split('(')[1].split(')')[0]
+                            buffer.append(st(check_output(temp)))
+                    elif (current_buffer and token[-1] == '\'') or (not current_buffer and token[-1] == '\"'):
+                         buffer.append(token[:-1])
                     if len(single)==0:
                         cmds[c].append(' '.join(buffer))
                         buffer.clear()
+                else:
+                    if token[0] == '$': #$(xyz)
+                        if '(' in token and ')' in token:
+                            temp = token.split('(')[1].split(')')[0]
+                            buffer.append(st(check_output(temp)))
+                    else:
+                        buffer.append(token)
             else:
                 #clear to parse
                 if token == '|':
@@ -81,13 +108,18 @@ def parseInput():
                         cmds[c].append(l[-1])
                 else:
                     #take care of nonescaped wildcards
-                    full = glob.glob(token)
-                    if len(full)>0:
-                        for g in glob.glob(token):
-                            cmds[c].append(g)
+                    if token[0] == '$': #$(xyz)
+                        if '(' in token and ')' in token:
+                            temp = token.split('(')[1].split(')')[0]
+                            cmds[c].append(st(check_output(temp)))
                     else:
-                        #take care of normal shlex escape processing bc I told shlex not to for literals
-                        cmds[c].append(token.replace('\\', ''))
+                        full = glob.glob(token)
+                        if len(full)>0:
+                            for g in glob.glob(token):
+                                cmds[c].append(g)
+                        else:
+                            #take care of normal shlex escape processing bc I told shlex not to for literals
+                            cmds[c].append(token.replace('\\', ''))
     return cmds
 
 def shellLoop():
@@ -113,6 +145,22 @@ def shellLoop():
                         cd(list[1]) if len(list)>1 else cd()
                     except FileNotFoundError:
                         printc("-gum: FileNotFoundError: No such file or directory: \'%s\'"%list[1])
+                elif list[0] == "8ball":
+                    print("[GUM-BALL] SAYS:")
+                    printc("\
+        ____\n \
+    ,dP9CGG88@b,\n \
+  ,IP  _   Y888@@b,\n \
+ dIi  (_)   G8888@b\n \
+dCII  (_)   G8888@@b\n \
+GCCIi     ,GG8888@@@\n \
+GGCCCCCCCGGG88888@@@\n \
+GGGGCCCGGGG88888@@@@...\n \
+Y8GGGGGG8888888@@@@P.....\n \
+ Y88888888888@@@@@P......\n \
+ `Y8888888@@@@@@@P\'......\n \
+    `@@@@@@@@@P'.......\n \
+        \"\"\"\"........")
                 elif list[0] == "jobs":
                     if len(job_parse(jobs))>0:
                         print(check_output(["ps"]).split(b'\n')[0].decode('utf-8'))
