@@ -33,6 +33,7 @@ def st(s):
 #all input, glob, regex, literal
 #FIX: take pipe splits before quote splits to preserve spacing between commands where whitespace_split won't handle
 #FIX: RECOGNIZE WHITESPACE in string literal especially on isolated \" or \' which would otherwise create a cmd='' and throw error
+#FIX: make sure subcommand operator $() can take MULTI WORD commands -- ie create SAME buffer from quotes for string literal
 def parseInput():
     i = input(colored('%s %s$ ' % ((os.getcwd().split('/')[-1] if os.getcwd().split('/')[-1]
         != getpass.getuser() else '~'), getpass.getuser()), 'red'))
