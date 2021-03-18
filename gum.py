@@ -1,13 +1,14 @@
-import os, glob, shlex, getpass, signal, curses
-from termcolor import colored
+import os, signal, random
+from gio import * #OS is included here but ok
 from subprocess import *
 
-class GumError(Exception):
-    pass
+def handler(signal_num, stack_frame):
+    print(": Process stop")
+    print("-gum: Foreground process paused.")
+    raise GumError
 
-#with termcolor for debug only
-def printc(s):
-    print(colored(s,'red'))
+#constant ctrlZ listener
+signal.signal(signal.SIGTSTP, handler)
 
 def jobs_update(jobs):
     active = check_output(["ps"])
@@ -25,103 +26,6 @@ def job_parse(jobs):
 #local cd
 def cd(path = os.path.expanduser("~")):
     return os.chdir(path)
-
-#strip formatting
-def st(s):
-    return s[:-1].decode('utf-8')
-
-#all input, glob, regex, literal
-#FIX: take pipe splits before quote splits to preserve spacing between commands where whitespace_split won't handle
-#FIX: RECOGNIZE WHITESPACE in string literal especially on isolated \" or \' which would otherwise create a cmd='' and throw error
-#FIX: make sure subcommand operator $() can take MULTI WORD commands -- ie create SAME buffer from quotes for string literal
-def parseInput():
-    i = input(colored('%s %s$ ' % ((os.getcwd().split('/')[-1] if os.getcwd().split('/')[-1]
-        != getpass.getuser() else '~'), getpass.getuser()), 'red'))
-    if i.split(' ')[0] == "exit":
-        raise GumError#DANGEROUS for errortype later
-    cmds, c = [[]], 0
-    s = shlex.shlex(i, posix=True)
-    s.quotes=''
-    s.escape=''
-    s.whitespace_split = True
-    buffer, single, check = [], [], ['\'', '\"']
-    for token in s:
-        if len(token)>0:
-            #manual quotation handling for regex, escape, literal
-            if (token[0] in check or token[-1] in check) or len(single)>0:
-                if (token[0] == token[-1]) and (token[0] == '\'' or token[0] == '\"'):
-                    if token[0] == '\'' and len(token.strip('\'')) > 0:
-                        if token.strip('\'')[0] == '$': #$(xyz)
-                            if '(' in token and ')' in token:
-                                temp = token.split('(')[1].split(')')[0]
-                                cmds[c].append(st(check_output(temp)))
-                        else:
-                            cmds[c].append(token.strip('\''))
-                    elif token[0] == '\"' and len(token.strip('\"')) > 0:
-                        if token.strip('\"')[0] == '$': #$(xyz)
-                            if '(' in token and ')' in token:
-                                temp = token.split('(')[1].split(')')[0]
-                                cmds[c].append(st(check_output(temp)))
-                        else:
-                            cmds[c].append(token.strip('\"'))
-                elif token[0] in check:#implicit beginning of whitespaced literal
-                    if token[0] == '\'':
-                        single.append(True)
-                    else:
-                        single.append(False)
-                    if token[0] == '$': #$(xyz)
-                        if '(' in token and ')' in token:
-                            temp = token.split('(')[1].split(')')[0]
-                            buffer.append(st(check_output(temp)))
-                    else:
-                        buffer.append(token[1:])
-                elif token[-1] in check:
-                    current_buffer=single.pop()
-                    if token[0] == '$': #$(xyz)
-                        if '(' in token and ')' in token:
-                            temp = token.split('(')[1].split(')')[0]
-                            buffer.append(st(check_output(temp)))
-                    elif (current_buffer and token[-1] == '\'') or (not current_buffer and token[-1] == '\"'):
-                         buffer.append(token[:-1])
-                    if len(single)==0:
-                        cmds[c].append(' '.join(buffer))
-                        buffer.clear()
-                else:
-                    if token[0] == '$': #$(xyz)
-                        if '(' in token and ')' in token:
-                            temp = token.split('(')[1].split(')')[0]
-                            buffer.append(st(check_output(temp)))
-                    else:
-                        buffer.append(token)
-            else:
-                #clear to parse
-                if token == '|':
-                    c += 1
-                    cmds.append([])
-                elif '|' in token and '\\|' not in token:
-                    l = token.split('|')
-                    for term in l[:-1]:
-                        if term != '':
-                            cmds[c].append(term)
-                        c+=1
-                        cmds.append([])
-                    if l[-1] != '':
-                        cmds[c].append(l[-1])
-                else:
-                    #take care of nonescaped wildcards
-                    if token[0] == '$': #$(xyz)
-                        if '(' in token and ')' in token:
-                            temp = token.split('(')[1].split(')')[0]
-                            cmds[c].append(st(check_output(temp)))
-                    else:
-                        full = glob.glob(token)
-                        if len(full)>0:
-                            for g in glob.glob(token):
-                                cmds[c].append(g)
-                        else:
-                            #take care of normal shlex escape processing bc I told shlex not to for literals
-                            cmds[c].append(token.replace('\\', ''))
-    return cmds
 
 def shellLoop():
     auto_hist = [] #for up/down arrow in referencing
@@ -145,23 +49,44 @@ def shellLoop():
                     try:
                         cd(list[1]) if len(list)>1 else cd()
                     except FileNotFoundError:
-                        printc("-gum: FileNotFoundError: No such file or directory: \'%s\'"%list[1])
+                        print("-gum: FileNotFoundError: No such file or directory: \'%s\'"%list[1])
+                elif list[0] == "bg":
+                    if list[1] not in jobs:
+                        print("-gum: job does not exist")
+                    else:
+                        try:
+                            Popen(["kill", "-CONT", list[1]])
+                            print("-gum: job "+list[1]+" continued in background")
+                        except Exception:
+                            print("-gum: unidentified error occurred")
+                elif list[0] == "fg":
+                    if list[1] not in jobs:
+                        print("-gum: job does not exist")
+                    else:
+                        try:
+                            out, err = None, None
+                            process = Popen(["kill", "-CONT", list[1]], stdout=PIPE, stderr=PIPE)
+                            try:
+                                process.wait()
+                                out, err = process.communicate()
+                                process.stdout.close()
+                                process.stderr.close()
+                                if process.returncode == 0:
+                                    if len(st(out))>0:
+                                        print(st(out))#get rid of newline
+                                else:
+                                    print(st(err))
+                                    #handle jobspecific error
+                            except KeyboardInterrupt:#ctrl-c
+                                print(': KeyboardInterrupt')
+                                process.send_signal(signal.SIGINT)
+                                print('-gum: Foreground process killed.')
+                        except Exception as e:
+                            pass
                 elif list[0] == "8ball":
-                    print("[GUM-BALL] SAYS:")
-                    printc("\
-        ____\n \
-    ,dP9CGG88@b,\n \
-  ,IP  _   Y888@@b,\n \
- dIi  (_)   G8888@b\n \
-dCII  (_)   G8888@@b\n \
-GCCIi     ,GG8888@@@\n \
-GGCCCCCCCGGG88888@@@\n \
-GGGGCCCGGGG88888@@@@...\n \
-Y8GGGGGG8888888@@@@P.....\n \
- Y88888888888@@@@@P......\n \
- `Y8888888@@@@@@@P\'......\n \
-    `@@@@@@@@@P'.......\n \
-        \"\"\"\"........")
+                        eight_ball()
+                elif list[0] == "nyan":
+                    run(["open", "http://www.nyan.cat/index.php?cat=technyancolor"])
                 elif list[0] == "jobs":
                     if len(job_parse(jobs))>0:
                         print(check_output(["ps"]).split(b'\n')[0].decode('utf-8'))
@@ -171,7 +96,7 @@ Y8GGGGGG8888888@@@@P.....\n \
                     if list[-1] == '&':
                         process = Popen(list[:-1])
                         #Popen attributes at https://docs.python.org/2.4/lib/node239.html
-                        printc("created job \'%s\' with pid %d"%(' '.join(list), process.pid))
+                        print("-gum: created job \'%s\' with pid %d"%(' '.join(list), process.pid))
                         jobs.append(str(process.pid))
                         jobs=jobs_update(jobs)
                     else: #fg
@@ -185,16 +110,16 @@ Y8GGGGGG8888888@@@@P.....\n \
                                 process.stderr.close()
                                 if process.returncode == 0:
                                     if len(st(out))>0:
-                                        printc(st(out))#get rid of newline
+                                        print(st(out))#get rid of newline
                                 else:
-                                    printc(st(err))
+                                    print(st(err))
                                     #handle jobspecific error
                             except KeyboardInterrupt:#ctrl-c
-                                printc(': KeyboardInterrupt')
+                                print(': KeyboardInterrupt')
                                 process.send_signal(signal.SIGINT)
-                                printc('-gum: Foreground process killed.')
+                                print('-gum: Foreground process killed.')
                         except FileNotFoundError:
-                            printc("-gum: %s: command not found"%list[0])
+                            print("-gum: %s: command not found"%list[0])
                         except Exception as e:
                             pass
 
@@ -212,12 +137,11 @@ Y8GGGGGG8888888@@@@P.....\n \
                                 p.wait()
                             raise Exception(processes[i].returncode, processes[i].pid)
                     except FileNotFoundError:
-                        printc("-gum: %s: command not found, stream terminated with command \'%s\'"%(list[i][0],list[i-1][0]))
+                        print("-gum: %s: command not found, stream terminated with command \'%s\'"%(list[i][0],list[i-1][0]))
                         ver = False
                         break
                     except Exception as c:
-                        printc("CPE with code=%s, related processes terminated"%(c.args[0]))
-                        #os.system("kill -- %s"%c.args[1])
+                        print("-gum: CPE with code=%s, related processes terminated"%(c.args[0]))
                         ver = False
                         break
                 if ver:
@@ -225,6 +149,6 @@ Y8GGGGGG8888888@@@@P.....\n \
                         p.stdout.close()
                         p.stderr.close()
                     e,f = processes[-1].communicate()
-                    printc(st(e))
+                    print(st(e))
 
 shellLoop()
